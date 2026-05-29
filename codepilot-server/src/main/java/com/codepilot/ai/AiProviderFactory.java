@@ -28,6 +28,9 @@ public class AiProviderFactory {
     }
 
     public AiProvider getProvider(String name) {
+        if (name == null || name.isEmpty()) {
+            name = defaultProvider;
+        }
         AiProvider provider = providers.get(name.toLowerCase());
         if (provider == null) {
             log.warn("Provider '{}' not found, using default: {}", name, defaultProvider);
