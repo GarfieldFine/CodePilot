@@ -62,7 +62,7 @@ ai:
       max-tokens: 4096
       temperature: 0.3
     deepseek:
-      api-key: ${DEEPSEEK_API_KEY:sk-0b157cc7896c444aa6ca64517f011d07}
+      api-key: ${DEEPSEEK_API_KEY:}
       api-url: https://api.deepseek.com/chat/completions
       model: deepseek-chat
       max-tokens: 4096
