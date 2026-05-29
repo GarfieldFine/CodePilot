@@ -159,12 +159,19 @@ public class GitHubClient {
         return commits;
     }
 
-    private Mono<Map<String, Object>> get(String path) {
-        return webClient.get()
+    private WebClient.RequestHeadersSpec<?> requestWithAuth(String path, String acceptHeader) {
+        WebClient.RequestHeadersSpec<?> spec = webClient.get()
                 .uri(baseUrl + path)
-                .header("Authorization", token != null && !token.isEmpty() ? "Bearer " + token : "")
-                .header("Accept", "application/vnd.github.v3+json")
-                .header("User-Agent", "CodePilot-AI-Reviewer")
+                .header("Accept", acceptHeader)
+                .header("User-Agent", "CodePilot-AI-Reviewer");
+        if (token != null && !token.isEmpty()) {
+            spec = spec.header("Authorization", "Bearer " + token);
+        }
+        return spec;
+    }
+
+    private Mono<Map<String, Object>> get(String path) {
+        return requestWithAuth(path, "application/vnd.github.v3+json")
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, response ->
                         response.bodyToMono(String.class)
@@ -179,11 +186,7 @@ public class GitHubClient {
     }
 
     private Mono<String> getDiff(String path) {
-        return webClient.get()
-                .uri(baseUrl + path)
-                .header("Authorization", token != null && !token.isEmpty() ? "Bearer " + token : "")
-                .header("Accept", DIFF_HEADER)
-                .header("User-Agent", "CodePilot-AI-Reviewer")
+        return requestWithAuth(path, DIFF_HEADER)
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, response ->
                         response.bodyToMono(String.class)
@@ -196,11 +199,7 @@ public class GitHubClient {
     }
 
     private Mono<List<Map<String, Object>>> getList(String path) {
-        return webClient.get()
-                .uri(baseUrl + path + "?per_page=100")
-                .header("Authorization", token != null && !token.isEmpty() ? "Bearer " + token : "")
-                .header("Accept", "application/vnd.github.v3+json")
-                .header("User-Agent", "CodePilot-AI-Reviewer")
+        return requestWithAuth(path + "?per_page=100", "application/vnd.github.v3+json")
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, response ->
                         response.bodyToMono(String.class)
@@ -223,11 +222,7 @@ public class GitHubClient {
     }
 
     private Mono<String> getRaw(String path) {
-        return webClient.get()
-                .uri(baseUrl + path)
-                .header("Authorization", token != null && !token.isEmpty() ? "Bearer " + token : "")
-                .header("Accept", "application/vnd.github.v3.raw")
-                .header("User-Agent", "CodePilot-AI-Reviewer")
+        return requestWithAuth(path, "application/vnd.github.v3.raw")
                 .retrieve()
                 .bodyToMono(String.class);
     }
