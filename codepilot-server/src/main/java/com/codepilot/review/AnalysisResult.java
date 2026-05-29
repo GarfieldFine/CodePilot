@@ -10,6 +10,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -31,4 +32,9 @@ public class AnalysisResult {
     private String aiRawOutput;
     private AnalysisStatus status;
     private List<FileAnalysis> fileAnalysis;
+
+    // Phase 2: Agent pipeline metadata
+    private Map<String, Object> repositoryProfile;
+    private Map<String, Object> confidenceScores;
+    private List<String> agentTimeline;
 }
