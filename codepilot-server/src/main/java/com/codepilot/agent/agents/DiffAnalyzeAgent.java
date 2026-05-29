@@ -4,6 +4,9 @@ import com.codepilot.agent.Agent;
 import com.codepilot.agent.AgentContext;
 import com.codepilot.agent.AgentResult;
 import com.codepilot.github.model.PrFile;
+import com.codepilot.semantic.SemanticAnalyzerFactory;
+import com.codepilot.semantic.SemanticContext;
+import com.codepilot.semantic.SemanticFinding;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -11,17 +14,24 @@ import java.util.*;
 
 /**
  * Performs deep diff analysis beyond raw text: classifies changes by type,
- * identifies high-risk change patterns, and computes change impact estimates.
+ * identifies high-risk change patterns, computes change impact estimates,
+ * and runs language-specific semantic analysis on changed files.
  */
 @Slf4j
 @Component
 public class DiffAnalyzeAgent implements Agent {
 
+    private final SemanticAnalyzerFactory semanticFactory;
+
+    public DiffAnalyzeAgent(SemanticAnalyzerFactory semanticFactory) {
+        this.semanticFactory = semanticFactory;
+    }
+
     @Override
     public String getName() { return "DiffAnalyzeAgent"; }
 
     @Override
-    public String getDescription() { return "Analyzing diff structure, classifying changes and impact"; }
+    public String getDescription() { return "Analyzing diff structure, classifying changes, semantic patterns and impact"; }
 
     @Override
     public int priority() { return 2; }
@@ -89,6 +99,25 @@ public class DiffAnalyzeAgent implements Agent {
         analysis.put("configChanges", String.join("; ", configChanges));
         analysis.put("sqlChanges", String.join("; ", sqlChanges));
         analysis.put("testChanges", testChanges.size() + " test files changed");
+
+        // 4. Run language-specific semantic analysis
+        SemanticContext semanticCtx = semanticFactory.analyzeAll(files);
+        if (!semanticCtx.isEmpty()) {
+            analysis.put("semanticFindingsCount", String.valueOf(semanticCtx.size()));
+            analysis.put("semanticCriticalCount", String.valueOf(semanticCtx.countBySeverity("CRITICAL")));
+            analysis.put("semanticHighCount", String.valueOf(semanticCtx.countBySeverity("HIGH")));
+
+            // Add top semantic findings summary
+            List<String> topFindings = new ArrayList<>();
+            for (SemanticFinding f : semanticCtx.findHighRisk()) {
+                topFindings.add("[" + f.getSeverity() + "] " + f.getFile() + ": " + f.getType());
+                if (topFindings.size() >= 10) break;
+            }
+            analysis.put("topSemanticFindings", String.join("; ", topFindings));
+
+            // Store in context for downstream agents
+            context.put("semanticContext", semanticCtx);
+        }
 
         context.setDiffAnalysis(analysis);
 

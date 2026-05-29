@@ -7,6 +7,8 @@ import com.codepilot.model.enums.RiskLevel;
 import com.codepilot.rule.Rule;
 import com.codepilot.rule.RuleEngine;
 import com.codepilot.rule.RuleResult;
+import com.codepilot.semantic.SemanticContext;
+import com.codepilot.semantic.SemanticFinding;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -48,9 +50,24 @@ public class RiskDetectAgent implements Agent {
 
         // 2. Apply semantic risk heuristics based on repository context
         List<Map<String, Object>> semanticRisks = detectSemanticRisks(context);
+
+        // 3. Merge language-specific semantic analysis findings
+        SemanticContext semanticCtx = context.get("semanticContext");
+        if (semanticCtx != null && !semanticCtx.isEmpty()) {
+            for (SemanticFinding sf : semanticCtx.getAllFindings()) {
+                Map<String, Object> risk = new LinkedHashMap<>();
+                risk.put("code", sf.getType());
+                risk.put("level", sf.getSeverity());
+                risk.put("description", sf.getDescription());
+                risk.put("suggestion", sf.getSuggestion());
+                risk.put("file", sf.getFile());
+                risk.put("source", "semantic:" + sf.getSource());
+                semanticRisks.add(risk);
+            }
+        }
         context.setAiRiskFindings(semanticRisks);
 
-        // 3. Combine and summarize
+        // 4. Combine and summarize
         long criticalCount = ruleResults.stream().filter(r -> r.getRiskLevel() == RiskLevel.CRITICAL).count();
         long highCount = ruleResults.stream().filter(r -> r.getRiskLevel() == RiskLevel.HIGH).count();
         long mediumCount = ruleResults.stream().filter(r -> r.getRiskLevel() == RiskLevel.MEDIUM).count();
