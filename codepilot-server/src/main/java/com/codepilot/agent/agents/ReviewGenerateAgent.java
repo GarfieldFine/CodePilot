@@ -11,6 +11,8 @@ import com.codepilot.review.DiffContextBuilder;
 import com.codepilot.review.PRAnalysisChunk;
 import com.codepilot.review.PrSplitter;
 import com.codepilot.rule.RuleResult;
+import com.codepilot.strategy.ReviewStrategy;
+import com.codepilot.strategy.ReviewStrategyFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -31,15 +33,18 @@ public class ReviewGenerateAgent implements Agent {
     private final PromptBuilder promptBuilder;
     private final PrSplitter prSplitter;
     private final DiffContextBuilder contextBuilder;
+    private final ReviewStrategyFactory strategyFactory;
 
     public ReviewGenerateAgent(AiProviderFactory aiProviderFactory,
                                PromptBuilder promptBuilder,
                                PrSplitter prSplitter,
-                               DiffContextBuilder contextBuilder) {
+                               DiffContextBuilder contextBuilder,
+                               ReviewStrategyFactory strategyFactory) {
         this.aiProviderFactory = aiProviderFactory;
         this.promptBuilder = promptBuilder;
         this.prSplitter = prSplitter;
         this.contextBuilder = contextBuilder;
+        this.strategyFactory = strategyFactory;
     }
 
     @Override
@@ -107,6 +112,12 @@ public class ReviewGenerateAgent implements Agent {
         sb.append("- **Project Type:** ").append(context.getProjectType()).append("\n");
         sb.append("- **Frameworks:** ").append(String.join(", ", context.getFrameworks())).append("\n");
         sb.append("- **Languages:** ").append(String.join(", ", context.getLanguages())).append("\n");
+
+        // Add language-specific strategy prompt extension
+        ReviewStrategy strategy = strategyFactory.findStrategy(language, context.getFrameworks());
+        if (strategy != null && !"Default".equals(strategy.getName())) {
+            sb.append("\n").append(strategy.getSystemPromptExtension());
+        }
 
         if (!focusAreas.isEmpty()) {
             sb.append("\n## Critical Focus Areas for This Review\n");

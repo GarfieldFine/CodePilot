@@ -3,6 +3,8 @@ package com.codepilot.agent.agents;
 import com.codepilot.agent.Agent;
 import com.codepilot.agent.AgentContext;
 import com.codepilot.agent.AgentResult;
+import com.codepilot.strategy.ReviewStrategy;
+import com.codepilot.strategy.ReviewStrategyFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -10,12 +12,18 @@ import java.util.*;
 
 /**
  * Builds enriched semantic context for the PR by combining repository profile,
- * diff analysis, and code-level semantics. This context is used by downstream
- * agents (RiskDetect, ReviewGenerate) to produce more informed reviews.
+ * diff analysis, and code-level semantics. Uses ReviewStrategyFactory for
+ * dynamic, language-aware focus area selection.
  */
 @Slf4j
 @Component
 public class ContextBuildAgent implements Agent {
+
+    private final ReviewStrategyFactory strategyFactory;
+
+    public ContextBuildAgent(ReviewStrategyFactory strategyFactory) {
+        this.strategyFactory = strategyFactory;
+    }
 
     @Override
     public String getName() { return "ContextBuildAgent"; }
@@ -40,9 +48,21 @@ public class ContextBuildAgent implements Agent {
         semanticContext.put("languages", String.join(", ", languages));
         semanticContext.put("frameworks", String.join(", ", frameworks));
 
-        // 2. Determine review focus areas based on technology stack
-        List<String> focusAreas = determineFocusAreas(languages, frameworks);
+        // 2. Determine review focus areas using dynamic strategy
+        List<String> focusAreas = strategyFactory.collectAllFocusAreas(languages, frameworks);
         semanticContext.put("focusAreas", String.join(", ", focusAreas));
+
+        // Determine active strategy names for logging
+        List<String> activeStrategies = new ArrayList<>();
+        for (String lang : languages) {
+            ReviewStrategy strategy = strategyFactory.findStrategy(lang, frameworks);
+            if (!"Default".equals(strategy.getName()) && !activeStrategies.contains(strategy.getName())) {
+                activeStrategies.add(strategy.getName());
+            }
+        }
+        if (!activeStrategies.isEmpty()) {
+            semanticContext.put("activeStrategies", String.join(", ", activeStrategies));
+        }
 
         // 3. Determine risk profile from diff analysis
         if (diffAnalysis != null) {
@@ -88,45 +108,4 @@ public class ContextBuildAgent implements Agent {
         return AgentResult.success(getName(), summary, new HashMap<>(semanticContext));
     }
 
-    private List<String> determineFocusAreas(List<String> languages, List<String> frameworks) {
-        List<String> areas = new ArrayList<>();
-        String langStr = String.join(",", languages).toLowerCase();
-        String fwStr = String.join(",", frameworks).toLowerCase();
-
-        if (langStr.contains("java") || fwStr.contains("spring")) {
-            areas.add("Concurrency Safety (thread pools, synchronized, locks)");
-            areas.add("Transaction Management (@Transactional scope, isolation levels)");
-            areas.add("Spring Context (bean scopes, circular dependencies)");
-            areas.add("SQL/ORM (N+1 queries, indexing, batch operations)");
-            areas.add("Redis/Cache (key design, consistency, eviction)");
-        }
-        if (langStr.contains("python")) {
-            areas.add("Type Safety (type hints, None handling)");
-            areas.add("Exception Handling (try-except granularity)");
-            areas.add("Dependency Management (requirements.txt changes)");
-        }
-        if (langStr.contains("go")) {
-            areas.add("Goroutine Lifecycle (leaks, context cancellation)");
-            areas.add("Channel Usage (deadlocks, unbuffered vs buffered)");
-            areas.add("Error Handling (error wrapping, sentinel errors)");
-        }
-        if (langStr.contains("typescript") || langStr.contains("javascript") || langStr.contains("vue") || langStr.contains("react")) {
-            areas.add("Component Architecture (props drilling, coupling)");
-            areas.add("State Management (hooks dependencies, render loops)");
-            areas.add("Performance (memo, useMemo, lazy loading)");
-            areas.add("Bundle Impact (large dependencies, tree-shaking)");
-        }
-        if (fwStr.contains("mybatis")) {
-            areas.add("SQL Injection (${} vs #{} in MyBatis)");
-            areas.add("Mapper XML correctness");
-        }
-
-        if (areas.isEmpty()) {
-            areas.add("Code Quality (naming, structure, duplication)");
-            areas.add("Error Handling (exception propagation, logging)");
-            areas.add("Testing (coverage, edge cases)");
-        }
-
-        return areas;
-    }
 }
