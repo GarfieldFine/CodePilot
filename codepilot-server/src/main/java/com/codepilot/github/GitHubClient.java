@@ -59,7 +59,7 @@ public class GitHubClient {
 
     public Mono<PrInfo> fetchPrDetail(String prUrl) {
         PrUrlInfo urlInfo = parsePrUrl(prUrl);
-        return fetchPrDetail(urlInfo.owner, urlInfo.repo, urlInfo.number);
+        return fetchPrDetail(urlInfo.owner(), urlInfo.repo(), urlInfo.prNumber());
     }
 
     public Mono<PrInfo> fetchPrDetail(String owner, String repo, int prNumber) {
@@ -208,7 +208,15 @@ public class GitHubClient {
                                         "GitHub API error: " + response.statusCode(),
                                         response.statusCode().value()))))
                 .bodyToMono(String.class)
-                .map(body -> JSONUtil.toList(body, Map.class))
+                .map(body -> {
+                    List<Map<String, Object>> result = new ArrayList<>();
+                    for (Object item : JSONUtil.parseArray(body)) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> map = (Map<String, Object>) item;
+                        result.add(map);
+                    }
+                    return result;
+                })
                 .retryWhen(Retry.backoff(maxRetries, Duration.ofMillis(retryDelayMs))
                         .filter(ex -> !(ex instanceof GitHubApiException ghe
                                 && (ghe.isNotFound() || ghe.isRateLimited()))));

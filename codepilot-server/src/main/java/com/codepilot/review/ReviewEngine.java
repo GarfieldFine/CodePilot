@@ -5,6 +5,7 @@ import com.codepilot.ai.AiProviderFactory;
 import com.codepilot.ai.model.AiReviewRequest;
 import com.codepilot.ai.model.ReviewSuggestion;
 import com.codepilot.ai.model.RiskFinding;
+import com.codepilot.ai.prompting.PromptBuilder;
 import com.codepilot.github.model.PrFile;
 import com.codepilot.github.model.PrInfo;
 import com.codepilot.model.enums.AnalysisStatus;
@@ -30,6 +31,7 @@ public class ReviewEngine {
     private final RuleEngine ruleEngine;
     private final RiskScoreCalculator scoreCalculator;
     private final DiffContextBuilder contextBuilder;
+    private final PromptBuilder promptBuilder;
     private final SseEmitterService sseService;
     private final PrSplitter prSplitter;
 
@@ -37,12 +39,14 @@ public class ReviewEngine {
                         RuleEngine ruleEngine,
                         RiskScoreCalculator scoreCalculator,
                         DiffContextBuilder contextBuilder,
+                        PromptBuilder promptBuilder,
                         SseEmitterService sseService,
                         PrSplitter prSplitter) {
         this.aiProviderFactory = aiProviderFactory;
         this.ruleEngine = ruleEngine;
         this.scoreCalculator = scoreCalculator;
         this.contextBuilder = contextBuilder;
+        this.promptBuilder = promptBuilder;
         this.sseService = sseService;
         this.prSplitter = prSplitter;
     }
@@ -85,7 +89,8 @@ public class ReviewEngine {
 
                 try {
                     String aiResponse = aiProvider.chat(
-                            contextBuilder.buildSystemPrompt(),
+                            promptBuilder.buildSystemPrompt(
+                                chunk.files().isEmpty() ? "Java" : chunk.files().get(0).getLanguage()),
                             buildUserPrompt(request, prInfo));
                     aiSummaries.add(aiResponse);
                 } catch (Exception e) {
