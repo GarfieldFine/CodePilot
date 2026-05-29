@@ -5,11 +5,13 @@ import com.codepilot.agent.AgentContext;
 import com.codepilot.agent.AgentResult;
 import com.codepilot.ai.AiProvider;
 import com.codepilot.ai.AiProviderFactory;
-import com.codepilot.ai.model.AiReviewRequest;
 import com.codepilot.ai.prompting.PromptBuilder;
+import com.codepilot.chunk.ChunkAnalyzer;
+import com.codepilot.chunk.ChunkAnalyzer.ChunkResult;
+import com.codepilot.chunk.ChunkSplitter;
+import com.codepilot.chunk.ContextCompressor;
 import com.codepilot.review.DiffContextBuilder;
 import com.codepilot.review.PRAnalysisChunk;
-import com.codepilot.review.PrSplitter;
 import com.codepilot.rule.RuleResult;
 import com.codepilot.strategy.ReviewStrategy;
 import com.codepilot.strategy.ReviewStrategyFactory;
@@ -20,10 +22,10 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Generates structured AI review for each PR chunk, enriched with semantic context.
+ * Generates structured AI review for each PR chunk using concurrent analysis.
  *
- * This agent is the primary AI interaction point — it builds enhanced prompts using
- * repository context, diff analysis, risk findings, and semantic focus areas.
+ * Uses ChunkSplitter for smart type-aware chunking and ChunkAnalyzer for
+ * parallel AI invocation across chunks.
  */
 @Slf4j
 @Component
@@ -31,18 +33,24 @@ public class ReviewGenerateAgent implements Agent {
 
     private final AiProviderFactory aiProviderFactory;
     private final PromptBuilder promptBuilder;
-    private final PrSplitter prSplitter;
+    private final ChunkSplitter chunkSplitter;
+    private final ChunkAnalyzer chunkAnalyzer;
+    private final ContextCompressor compressor;
     private final DiffContextBuilder contextBuilder;
     private final ReviewStrategyFactory strategyFactory;
 
     public ReviewGenerateAgent(AiProviderFactory aiProviderFactory,
                                PromptBuilder promptBuilder,
-                               PrSplitter prSplitter,
+                               ChunkSplitter chunkSplitter,
+                               ChunkAnalyzer chunkAnalyzer,
+                               ContextCompressor compressor,
                                DiffContextBuilder contextBuilder,
                                ReviewStrategyFactory strategyFactory) {
         this.aiProviderFactory = aiProviderFactory;
         this.promptBuilder = promptBuilder;
-        this.prSplitter = prSplitter;
+        this.chunkSplitter = chunkSplitter;
+        this.chunkAnalyzer = chunkAnalyzer;
+        this.compressor = compressor;
         this.contextBuilder = contextBuilder;
         this.strategyFactory = strategyFactory;
     }
@@ -51,7 +59,7 @@ public class ReviewGenerateAgent implements Agent {
     public String getName() { return "ReviewGenerateAgent"; }
 
     @Override
-    public String getDescription() { return "Generating AI code review with semantic context"; }
+    public String getDescription() { return "Generating AI code review with smart chunking and concurrent analysis"; }
 
     @Override
     public int priority() { return 20; }
@@ -59,53 +67,68 @@ public class ReviewGenerateAgent implements Agent {
     @Override
     public AgentResult execute(AgentContext context) {
         AiProvider aiProvider = aiProviderFactory.getProvider(context.getProviderName());
-        List<PRAnalysisChunk> chunks = prSplitter.split(context.getPrInfo());
-        List<String> chunkReviews = Collections.synchronizedList(new ArrayList<>());
+        List<PRAnalysisChunk> chunks = chunkSplitter.split(context.getPrInfo());
 
-        log.info("{}: Reviewing {} chunks with provider {}", getName(), chunks.size(), aiProvider.getProviderName());
+        log.info("{}: Reviewing {} chunks with provider {} (concurrent)",
+                getName(), chunks.size(), aiProvider.getProviderName());
 
         String primaryLanguage = context.getLanguages().isEmpty() ? "Java" : context.getLanguages().get(0);
-        List<String> focusAreas = getFocusAreasFromContext(context);
 
-        for (int i = 0; i < chunks.size(); i++) {
-            PRAnalysisChunk chunk = chunks.get(i);
+        // Build system prompt once (shared across chunks)
+        String systemPrompt = buildEnhancedSystemPrompt(primaryLanguage, context);
+
+        // Analyze all chunks concurrently
+        List<ChunkResult> chunkResults = chunkAnalyzer.analyze(chunks, chunk -> {
             String chunkLang = detectChunkLanguage(chunk);
 
             Map<String, String> fileContexts = contextBuilder.buildContext(
                     chunk.files(), Collections.emptyMap());
+
+            // Compress contexts if too large
+            Map<String, String> compressed = compressor.compressContexts(fileContexts, 3000);
 
             List<RuleResult> chunkRules = context.getRuleResults().stream()
                     .filter(r -> chunk.files().stream()
                             .anyMatch(f -> f.getFilename().equals(r.getFile())))
                     .collect(Collectors.toList());
 
-            // Build enhanced prompt with all agent context
-            String systemPrompt = buildEnhancedSystemPrompt(primaryLanguage, focusAreas, context);
-            String userPrompt = buildEnhancedUserPrompt(chunk, fileContexts, chunkRules, context, i + 1, chunks.size());
+            String userPrompt = buildEnhancedUserPrompt(chunk, compressed, chunkRules,
+                    context, chunk, chunks.size());
 
-            try {
-                String aiResponse = aiProvider.chat(systemPrompt, userPrompt);
-                chunkReviews.add(aiResponse);
-                log.info("{}: Chunk {}/{} completed ({} chars)", getName(), i + 1, chunks.size(), aiResponse.length());
-            } catch (Exception e) {
-                log.error("{}: Chunk {}/{} failed: {}", getName(), i + 1, chunks.size(), e.getMessage());
-                chunkReviews.add("[AI Review failed for chunk " + (i + 1) + ": " + e.getMessage() + "]");
-            }
+            return aiProvider.chat(systemPrompt, userPrompt);
+        });
+
+        // Collect successful reviews
+        List<String> chunkReviews = new ArrayList<>();
+        for (ChunkResult r : chunkResults) {
+            chunkReviews.add(r.output());
         }
-
         context.setChunkReviews(chunkReviews);
+
+        // Store chunk metadata for SummaryMergeAgent
+        Map<String, Object> chunkMeta = new LinkedHashMap<>();
+        chunkMeta.put("totalChunks", chunks.size());
+        chunkMeta.put("successfulChunks", chunkResults.stream().filter(ChunkResult::isSuccess).count());
+        chunkMeta.put("failedChunks", chunkResults.stream().filter(r -> !r.isSuccess()).count());
+        chunkMeta.put("totalTokens", chunks.stream().mapToInt(chunkSplitter::estimateChunkTokens).sum());
+        chunkMeta.put("totalDurationMs", chunkResults.stream().mapToLong(ChunkResult::durationMs).sum());
+        context.put("chunkMeta", chunkMeta);
 
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("chunkCount", chunks.size());
         output.put("totalReviewLength", chunkReviews.stream().mapToInt(String::length).sum());
+        output.put("chunkMeta", chunkMeta);
 
-        String summary = String.format("Generated AI review across %d chunks (%d total chars)",
-                chunks.size(), output.get("totalReviewLength"));
+        String summary = String.format("Generated AI review across %d chunks (%d/%d succeeded, %d total chars)",
+                chunks.size(),
+                chunkMeta.get("successfulChunks"),
+                chunkMeta.get("totalChunks"),
+                output.get("totalReviewLength"));
 
         return AgentResult.success(getName(), summary, output);
     }
 
-    private String buildEnhancedSystemPrompt(String language, List<String> focusAreas, AgentContext context) {
+    private String buildEnhancedSystemPrompt(String language, AgentContext context) {
         StringBuilder sb = new StringBuilder();
         sb.append(promptBuilder.buildSystemPrompt(language));
         sb.append("\n\n## Project Context (Auto-Detected)\n");
@@ -113,17 +136,9 @@ public class ReviewGenerateAgent implements Agent {
         sb.append("- **Frameworks:** ").append(String.join(", ", context.getFrameworks())).append("\n");
         sb.append("- **Languages:** ").append(String.join(", ", context.getLanguages())).append("\n");
 
-        // Add language-specific strategy prompt extension
         ReviewStrategy strategy = strategyFactory.findStrategy(language, context.getFrameworks());
         if (strategy != null && !"Default".equals(strategy.getName())) {
             sb.append("\n").append(strategy.getSystemPromptExtension());
-        }
-
-        if (!focusAreas.isEmpty()) {
-            sb.append("\n## Critical Focus Areas for This Review\n");
-            for (String area : focusAreas) {
-                sb.append("- ").append(area).append("\n");
-            }
         }
 
         sb.append("\n## Explainability Requirement\n");
@@ -142,45 +157,44 @@ public class ReviewGenerateAgent implements Agent {
                                            Map<String, String> fileContexts,
                                            List<RuleResult> chunkRules,
                                            AgentContext context,
-                                           int chunkIndex,
+                                           PRAnalysisChunk fullChunk,
                                            int totalChunks) {
-        // Start with standard review template enriched with agent context
         String language = detectChunkLanguage(chunk);
 
         StringBuilder sb = new StringBuilder();
-        sb.append("## Pull Request Review (Chunk ").append(chunkIndex).append("/").append(totalChunks).append(")\n\n");
+        sb.append("## Pull Request Review Chunk\n\n");
 
         sb.append("**PR Title:** ").append(context.getPrInfo().getTitle()).append("\n");
-        sb.append("**Changed Files in this chunk:** ").append(chunk.files().size()).append("\n\n");
+        sb.append("**Files in chunk:** ").append(chunk.files().size()).append("\n");
 
-        // Add repository context summary
-        sb.append("### Repository Context\n");
+        // File summary
+        sb.append("### Files\n");
+        sb.append(compressor.summarizeChunk(chunk.files(), 15));
+        sb.append("\n");
+
+        // Repository context
+        sb.append("### Context\n");
         sb.append("Project: ").append(context.getProjectType())
                 .append(" | Language: ").append(language)
                 .append(" | Frameworks: ").append(String.join(", ", context.getFrameworks()))
                 .append("\n\n");
 
-        // Add semantic focus areas
-        Map<String, String> semCtx = context.getSemanticContext();
-        if (semCtx != null && semCtx.containsKey("focusAreas")) {
-            sb.append("### Review Focus Areas\n").append(semCtx.get("focusAreas")).append("\n\n");
-        }
-
-        // Code diff
+        // Code diff (compressed)
         sb.append("### Code Diff\n```diff\n");
-        sb.append(truncate(chunk.diff(), 6000));
+        sb.append(compressor.compressDiff(fullChunk.diff(), 5000));
         sb.append("\n```\n\n");
 
         // Related context
         if (!fileContexts.isEmpty()) {
-            sb.append("### Related Code Context\n```").append(language).append("\n");
-            sb.append(truncate(String.join("\n\n", fileContexts.values()), 4000));
+            sb.append("### Related Code\n```").append(language).append("\n");
+            String ctx = String.join("\n\n", fileContexts.values());
+            sb.append(truncate(ctx, 4000));
             sb.append("\n```\n\n");
         }
 
-        // Rule findings for this chunk
+        // Rule findings for reference
         if (!chunkRules.isEmpty()) {
-            sb.append("### Static Analysis Findings (for reference)\n");
+            sb.append("### Static Analysis Findings\n");
             for (RuleResult r : chunkRules) {
                 sb.append("- [").append(r.getRiskLevel()).append("] ").append(r.getRuleName())
                         .append(": ").append(r.getMessage()).append("\n");
@@ -189,7 +203,7 @@ public class ReviewGenerateAgent implements Agent {
         }
 
         // Commit messages
-        sb.append("### Commit Messages\n");
+        sb.append("### Commits\n");
         sb.append(truncate(formatCommits(context), 1500));
         sb.append("\n\n");
 
@@ -200,14 +214,6 @@ public class ReviewGenerateAgent implements Agent {
     private String detectChunkLanguage(PRAnalysisChunk chunk) {
         if (chunk.files().isEmpty()) return "Java";
         return chunk.files().get(0).getLanguage();
-    }
-
-    private List<String> getFocusAreasFromContext(AgentContext context) {
-        Map<String, String> semCtx = context.getSemanticContext();
-        if (semCtx != null && semCtx.containsKey("focusAreas")) {
-            return Arrays.asList(semCtx.get("focusAreas").split(", "));
-        }
-        return List.of();
     }
 
     private String formatCommits(AgentContext context) {
