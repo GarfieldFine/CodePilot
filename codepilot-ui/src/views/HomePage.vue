@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { analyzePR } from '@/api'
 import { useAnalysisStore } from '@/stores/analysis'
 
 const router = useRouter()
@@ -21,7 +20,7 @@ function fillExample(url: string) {
   prUrl.value = url
 }
 
-async function startAnalysis() {
+function startAnalysis() {
   error.value = ''
   if (!prUrl.value.trim()) {
     error.value = '请输入 GitHub PR 链接'
@@ -32,17 +31,13 @@ async function startAnalysis() {
     return
   }
   loading.value = true
-  store.reset()
-  try {
-    const result = await analyzePR({ prUrl: prUrl.value.trim() })
-    store.result = result
-    store.status = 'COMPLETED'
-    router.push('/analysis')
-  } catch (e: any) {
-    error.value = e.message || '分析失败，请检查 PR 链接'
-  } finally {
-    loading.value = false
-  }
+  const url = prUrl.value.trim()
+  // Navigate first so the analysis page renders immediately
+  router.push('/analysis')
+  // Start SSE streaming — AnalysisPage will pick up store.prUrl
+  store.startStreaming(url)
+  // loading will be set to false by store when streaming completes or errors
+  setTimeout(() => { loading.value = false }, 500)
 }
 </script>
 

@@ -130,34 +130,89 @@ public class ReviewEngine {
         AiProvider aiProvider = aiProviderFactory.getProvider(providerName);
         log.info("Starting streaming analysis {} with {}", analysisId, aiProvider.getProviderName());
 
-        return Flux.concat(
-                Flux.just("{\"type\":\"status\",\"status\":\"ANALYZING_DIFF\",\"message\":\"正在运行静态规则引擎...\"}"),
-                Flux.defer(() -> {
-                    List<RuleResult> ruleResults = ruleEngine.analyze(prInfo);
-                    return Flux.just("{\"type\":\"status\",\"status\":\"RULES_COMPLETE\",\"message\":\"规则引擎完成，发现 " +
-                            ruleResults.size() + " 个问题\",\"count\":" + ruleResults.size() + "}");
-                }),
-                Flux.just("{\"type\":\"status\",\"status\":\"AI_REVIEWING\",\"message\":\"AI 正在分析代码变更...\"}"),
-                Flux.defer(() -> {
-                    List<PRAnalysisChunk> chunks = prSplitter.split(prInfo);
-                    Map<String, String> fileContexts = contextBuilder.buildContext(
-                            prInfo.getFiles(), Collections.emptyMap());
+        // Run rule engine synchronously first (fast)
+        List<RuleResult> ruleResults = ruleEngine.analyze(prInfo);
+        Map<String, String> fileContexts = contextBuilder.buildContext(
+                prInfo.getFiles(), Collections.emptyMap());
 
-                    AiReviewRequest request = AiReviewRequest.builder()
-                            .diff(prInfo.getDiffContent())
-                            .contextCode(String.join("\n\n", fileContexts.values()))
-                            .commitMessages(formatCommits(prInfo))
-                            .fileLanguage("Java")
+        AiReviewRequest request = AiReviewRequest.builder()
+                .diff(prInfo.getDiffContent())
+                .contextCode(String.join("\n\n", fileContexts.values()))
+                .commitMessages(formatCommits(prInfo))
+                .fileLanguage("Java")
+                .riskRules(ruleResults.stream()
+                        .map(r -> r.getRuleName() + ": " + r.getMessage())
+                        .toList())
+                .build();
+
+        StringBuilder aiOutput = new StringBuilder();
+
+        return Flux.concat(
+                Flux.just(jsonStatus("ANALYZING_DIFF", "正在运行静态规则引擎...")),
+                Flux.just(jsonStatus("RULES_COMPLETE",
+                        "规则引擎完成，发现 " + ruleResults.size() + " 个问题",
+                        ruleResults.size())),
+                Flux.just(jsonStatus("AI_REVIEWING", "AI 正在分析代码变更...")),
+                aiProvider.reviewStream(request)
+                        .doOnNext(aiOutput::append)
+                        .map(token -> jsonToken(token)),
+                Flux.defer(() -> {
+                    // After AI stream completes, build full result
+                    String combinedAiOutput = aiOutput.toString();
+                    RiskScore riskScore = scoreCalculator.calculate(prInfo, ruleResults, combinedAiOutput);
+
+                    AnalysisResult result = AnalysisResult.builder()
+                            .analysisId(analysisId)
+                            .prTitle(prInfo.getTitle())
+                            .prUrl(prInfo.getHtmlUrl())
+                            .prNumber(prInfo.getNumber())
+                            .owner(prInfo.getOwner())
+                            .repo(prInfo.getRepo())
+                            .author(prInfo.getAuthor())
+                            .changedFiles(prInfo.getChangedFiles())
+                            .additions(prInfo.getAdditions())
+                            .deletions(prInfo.getDeletions())
+                            .ruleResults(ruleResults)
+                            .riskScore(riskScore)
+                            .aiRawOutput(combinedAiOutput)
+                            .status(AnalysisStatus.COMPLETED)
+                            .fileAnalysis(buildFileAnalysis(prInfo, ruleResults))
                             .build();
 
-                    return aiProvider.reviewStream(request)
-                            .map(token -> "{\"type\":\"ai_token\",\"content\":\"" + escapeJson(token) + "\"}");
-                }),
-                Flux.just("{\"type\":\"status\",\"status\":\"COMPLETED\",\"message\":\"分析完成\"}")
+                    return Flux.just(jsonComplete(result));
+                })
         ).onErrorResume(e -> {
             log.error("Stream analysis error: {}", e.getMessage());
-            return Flux.just("{\"type\":\"error\",\"message\":\"" + escapeJson(e.getMessage()) + "\"}");
+            return Flux.just(jsonError(e.getMessage()));
         });
+    }
+
+    private String jsonStatus(String status, String message) {
+        return jsonStatus(status, message, null);
+    }
+
+    private String jsonStatus(String status, String message, Integer count) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"type\":\"status\",\"status\":\"").append(status)
+                .append("\",\"message\":\"").append(escapeJson(message)).append("\"");
+        if (count != null) {
+            sb.append(",\"count\":").append(count);
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+
+    private String jsonToken(String token) {
+        return "{\"type\":\"ai_token\",\"content\":\"" + escapeJson(token) + "\"}";
+    }
+
+    private String jsonComplete(AnalysisResult result) {
+        String dataJson = cn.hutool.json.JSONUtil.toJsonStr(result);
+        return "{\"type\":\"complete\",\"data\":" + dataJson + "}";
+    }
+
+    private String jsonError(String message) {
+        return "{\"type\":\"error\",\"message\":\"" + escapeJson(message) + "\"}";
     }
 
     private String buildUserPrompt(AiReviewRequest request, PrInfo prInfo) {
