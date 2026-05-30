@@ -3,8 +3,6 @@ package com.codepilot.agent.agents;
 import com.codepilot.agent.Agent;
 import com.codepilot.agent.AgentContext;
 import com.codepilot.agent.AgentResult;
-import com.codepilot.ai.AiProvider;
-import com.codepilot.ai.AiProviderFactory;
 import com.codepilot.github.model.PrFile;
 import com.codepilot.github.model.PrInfo;
 import com.codepilot.model.enums.AnalysisStatus;
@@ -12,6 +10,9 @@ import com.codepilot.model.enums.RiskLevel;
 import com.codepilot.review.AnalysisResult;
 import com.codepilot.review.FileAnalysis;
 import com.codepilot.rule.RuleResult;
+import com.codepilot.confidence.ConfidenceCalculator;
+import com.codepilot.confidence.ConfidenceCalculator.ConfidenceInput;
+import com.codepilot.confidence.ConfidenceCalculator.ConfidenceResult;
 import com.codepilot.scorer.RiskScore;
 import com.codepilot.scorer.RiskScoreCalculator;
 import lombok.extern.slf4j.Slf4j;
@@ -34,12 +35,12 @@ import java.util.stream.Collectors;
 public class SummaryMergeAgent implements Agent {
 
     private final RiskScoreCalculator scoreCalculator;
-    private final AiProviderFactory aiProviderFactory;
+    private final ConfidenceCalculator confidenceCalculator;
 
     public SummaryMergeAgent(RiskScoreCalculator scoreCalculator,
-                              AiProviderFactory aiProviderFactory) {
+                             ConfidenceCalculator confidenceCalculator) {
         this.scoreCalculator = scoreCalculator;
-        this.aiProviderFactory = aiProviderFactory;
+        this.confidenceCalculator = confidenceCalculator;
     }
 
     @Override
@@ -188,49 +189,31 @@ public class SummaryMergeAgent implements Agent {
     private record MergeResult(String combined, int chunkCount, int dedupCount) {}
 
     private Map<String, Object> calculateConfidence(AgentContext context, RiskScore riskScore) {
-        Map<String, Object> conf = new LinkedHashMap<>();
-
-        // Factor 1: Rule engine participation
-        long matchedRules = context.getRuleResults().stream().filter(RuleResult::isMatched).count();
-        long totalRules = context.getRuleResults().size();
-        double ruleCoverage = totalRules > 0 ? (double) matchedRules / Math.max(totalRules, 1) : 0.5;
-
-        // Factor 2: Chunk analysis success rate
         @SuppressWarnings("unchecked")
         Map<String, Object> chunkMeta = (Map<String, Object>) context.getMetadata().get("chunkMeta");
-        int totalChunks = chunkMeta != null ? ((Number) chunkMeta.getOrDefault("totalChunks", 0)).intValue() : context.getChunkReviews().size();
-        long successfulChunks = chunkMeta != null ? ((Number) chunkMeta.getOrDefault("successfulChunks", 0)).longValue() : context.getChunkReviews().size();
-        double chunkCompleteness = totalChunks > 0 ? (double) successfulChunks / totalChunks : 1.0;
 
-        // Factor 3: Change complexity factor
+        int changeScore = 0;
         Map<String, String> diffAnalysis = context.getDiffAnalysis();
-        int changeScore = diffAnalysis != null ? Integer.parseInt(diffAnalysis.getOrDefault("changeScore", "0")) : 0;
-        double complexityFactor = Math.max(0.5, 1.0 - (changeScore / 200.0));
+        if (diffAnalysis != null) {
+            changeScore = Integer.parseInt(diffAnalysis.getOrDefault("changeScore", "0"));
+        }
 
-        // Factor 4: Repository knowledge factor
-        int languagesKnown = context.getLanguages().size();
-        int frameworksKnown = context.getFrameworks().size();
-        double repoKnowledge = Math.min(1.0, (languagesKnown * 0.2 + frameworksKnown * 0.15 + 0.3));
+        ConfidenceInput input = ConfidenceInput.builder()
+                .ruleResults(context.getRuleResults())
+                .chunkReviews(context.getChunkReviews())
+                .chunkMeta(chunkMeta)
+                .changeScore(changeScore)
+                .languages(context.getLanguages())
+                .frameworks(context.getFrameworks())
+                .build();
 
-        // Factor 5: Token coverage (adequate context = higher confidence)
-        int totalTokens = chunkMeta != null ? ((Number) chunkMeta.getOrDefault("totalTokens", 0)).intValue() : 0;
-        double tokenCoverage = totalTokens > 1000 ? Math.min(1.0, totalTokens / 8000.0) : 0.7;
+        ConfidenceResult result = confidenceCalculator.calculate(input);
 
-        // Weighted confidence
-        double overallConfidence = (ruleCoverage * 0.20 +
-                chunkCompleteness * 0.30 +
-                complexityFactor * 0.20 +
-                repoKnowledge * 0.20 +
-                tokenCoverage * 0.10) * 100;
-
-        overallConfidence = Math.min(98, Math.max(30, overallConfidence));
-
-        conf.put("overallConfidence", Math.round(overallConfidence * 10.0) / 10.0);
-        conf.put("ruleCoverage", Math.round(ruleCoverage * 100.0) / 100.0);
-        conf.put("chunkCompleteness", Math.round(chunkCompleteness * 100.0) / 100.0);
-        conf.put("complexityFactor", Math.round(complexityFactor * 100.0) / 100.0);
-        conf.put("repoKnowledge", Math.round(repoKnowledge * 100.0) / 100.0);
-        conf.put("tokenCoverage", Math.round(tokenCoverage * 100.0) / 100.0);
+        Map<String, Object> conf = new LinkedHashMap<>();
+        conf.put("overallConfidence", result.getOverallConfidence());
+        conf.put("confidenceLevel", result.getConfidenceLevel());
+        conf.put("factors", result.getFactors());
+        conf.put("summary", result.getSummary());
 
         return conf;
     }
