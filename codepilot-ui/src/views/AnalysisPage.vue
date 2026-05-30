@@ -7,7 +7,10 @@ import RiskScoreCard from '@/components/RiskScoreCard.vue'
 import RuleFindings from '@/components/RuleFindings.vue'
 import AiReviewPanel from '@/components/AiReviewPanel.vue'
 import FileAnalysisList from '@/components/FileAnalysisList.vue'
-import StreamingTimeline from '@/components/StreamingTimeline.vue'
+import AiThinkingTimeline from '@/components/AiThinkingTimeline.vue'
+import AgentStatusBar from '@/components/AgentStatusBar.vue'
+import ConfidenceGauge from '@/components/ConfidenceGauge.vue'
+import RiskHeatMap from '@/components/RiskHeatMap.vue'
 
 const router = useRouter()
 const store = useAnalysisStore()
@@ -30,6 +33,7 @@ function handleBack() {
 
 <template>
   <div class="analysis-page">
+    <!-- Top bar with agent status -->
     <header class="top-bar">
       <button class="back-btn" @click="handleBack">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
@@ -41,33 +45,71 @@ function handleBack() {
       </div>
       <div class="top-status" v-if="store.status && store.status !== 'COMPLETED' && store.status !== 'FAILED'">
         <span class="status-dot"></span>
-        {{ store.statusMessage || store.status }}
+        {{ store.statusMessage || store.currentStage || store.status }}
       </div>
     </header>
 
+    <!-- Agent status bar — shows during active analysis -->
+    <div class="agent-bar-wrapper" v-if="(store.status && store.status !== 'COMPLETED' && store.status !== 'FAILED') || store.tokenUsage">
+      <AgentStatusBar
+        :active-agents="store.activeAgents"
+        :token-usage="store.tokenUsage"
+        :status="store.status"
+      />
+    </div>
+
     <main class="main-grid">
+      <!-- Left sidebar: PR info + Agent workflow + File list -->
       <aside class="left-sidebar">
         <PrSummary :result="store.result" />
 
-        <!-- Show timeline during streaming even without full result -->
-        <StreamingTimeline
-          v-if="store.sseStatusHistory.length > 0"
-          :history="store.sseStatusHistory"
-          :current-status="store.status as any"
+        <!-- Agent workflow timeline — replaces old StreamingTimeline -->
+        <AiThinkingTimeline
+          v-if="store.agentEvents.length > 0 || store.loading"
+          :agent-events="store.agentEvents"
+          :active-agents="store.activeAgents"
+          :current-stage="store.currentStage"
+          :status="store.status as any"
         />
 
-        <!-- Show loading skeleton while waiting for file analysis -->
+        <!-- Legacy timeline fallback -->
+        <div v-else-if="store.sseStatusHistory.length > 0 && store.agentEvents.length === 0" class="legacy-timeline-card">
+          <div class="timeline-card-header">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            </svg>
+            <span>分析进度</span>
+          </div>
+          <div
+            v-for="(step, i) in store.sseStatusHistory"
+            :key="i"
+            class="legacy-step"
+          >
+            <span class="legacy-step-dot" :class="{ active: i === store.sseStatusHistory.length - 1 && store.status !== 'COMPLETED' }"></span>
+            <span class="legacy-step-msg">{{ step.message || step.status }}</span>
+          </div>
+        </div>
+
+        <!-- Loading skeleton for file list -->
         <div v-if="store.loading && !store.result?.fileAnalysis" class="skeleton-card">
           <div class="skeleton-line skeleton-title"></div>
           <div class="skeleton-line" v-for="i in 4" :key="i"></div>
         </div>
 
+        <!-- Risk heatmap — shows after analysis completes -->
+        <RiskHeatMap
+          v-if="store.result?.fileAnalysis"
+          :files="store.result.fileAnalysis"
+        />
+
+        <!-- File analysis list (condensed below heatmap) -->
         <FileAnalysisList
           v-if="store.result?.fileAnalysis"
           :files="store.result.fileAnalysis"
         />
       </aside>
 
+      <!-- Center: AI Review output -->
       <section class="center-content">
         <AiReviewPanel
           :content="store.aiStream || store.result?.aiRawOutput || ''"
@@ -75,6 +117,7 @@ function handleBack() {
         />
       </section>
 
+      <!-- Right sidebar: Risk score + Confidence + Rule findings -->
       <aside class="right-sidebar">
         <RiskScoreCard
           v-if="store.result?.riskScore"
@@ -84,6 +127,11 @@ function handleBack() {
           <div class="skeleton-ring"></div>
           <div class="skeleton-line" v-for="i in 5" :key="i"></div>
         </div>
+
+        <!-- AI confidence gauge -->
+        <ConfidenceGauge
+          :confidence="store.confidence"
+        />
 
         <RuleFindings
           v-if="store.result?.ruleResults"
@@ -110,6 +158,7 @@ function handleBack() {
   position: sticky;
   top: 0;
   z-index: 100;
+  backdrop-filter: blur(12px);
 }
 
 .back-btn {
@@ -130,6 +179,7 @@ function handleBack() {
 .back-btn:hover {
   border-color: var(--border-light);
   color: var(--text-primary);
+  box-shadow: var(--shadow-glow-sm);
 }
 
 .top-title {
@@ -175,6 +225,13 @@ function handleBack() {
   50% { opacity: 0.3; }
 }
 
+/* Agent status bar wrapper */
+.agent-bar-wrapper {
+  padding: 10px 20px 0;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
 .main-grid {
   display: grid;
   grid-template-columns: 300px 1fr 340px;
@@ -198,6 +255,50 @@ function handleBack() {
   overflow-y: auto;
 }
 
+/* Legacy timeline fallback */
+.legacy-timeline-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.timeline-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+}
+
+.timeline-card-header svg { color: var(--primary); }
+
+.legacy-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.legacy-step-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-light);
+  flex-shrink: 0;
+}
+
+.legacy-step-dot.active {
+  background: var(--primary);
+  box-shadow: 0 0 6px var(--primary-glow);
+}
+
 @media (max-width: 1200px) {
   .main-grid {
     grid-template-columns: 260px 1fr 300px;
@@ -215,6 +316,10 @@ function handleBack() {
   .left-sidebar,
   .right-sidebar {
     overflow-y: visible;
+  }
+
+  .agent-bar-wrapper {
+    padding: 8px 14px 0;
   }
 }
 

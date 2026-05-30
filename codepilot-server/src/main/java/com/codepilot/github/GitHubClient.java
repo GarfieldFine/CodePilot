@@ -80,6 +80,54 @@ public class GitHubClient {
         return getRaw("/repos/" + owner + "/" + repo + "/contents/" + path + "?ref=" + ref);
     }
 
+    /**
+     * Fetches the repository root directory file listing.
+     * Used by RepositoryAnalyzer to detect build files and project structure.
+     * Returns a list of file/folder names at the repository root.
+     */
+    public Mono<List<String>> fetchRepoContents(String owner, String repo) {
+        log.debug("Fetching repo contents: {}/{}", owner, repo);
+        return getListRaw("/repos/" + owner + "/" + repo + "/contents/")
+                .map(items -> {
+                    List<String> names = new ArrayList<>();
+                    for (Map<String, Object> item : items) {
+                        String name = getString(item, "name");
+                        String type = getString(item, "type");
+                        if (name != null) {
+                            names.add("dir".equals(type) ? name + "/" : name);
+                        }
+                    }
+                    return names;
+                })
+                .onErrorResume(e -> {
+                    log.warn("Failed to fetch repo contents for {}/{}: {}", owner, repo, e.getMessage());
+                    return Mono.just(List.of());
+                });
+    }
+
+    private Mono<List<Map<String, Object>>> getListRaw(String path) {
+        return requestWithAuth(path, "application/vnd.github.v3+json")
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, response ->
+                        response.bodyToMono(String.class)
+                                .flatMap(body -> Mono.error(new GitHubApiException(
+                                        "GitHub API error: " + response.statusCode() + " - " + body,
+                                        response.statusCode().value()))))
+                .bodyToMono(String.class)
+                .map(body -> {
+                    List<Map<String, Object>> result = new ArrayList<>();
+                    for (Object item : JSONUtil.parseArray(body)) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> map = (Map<String, Object>) item;
+                        result.add(map);
+                    }
+                    return result;
+                })
+                .retryWhen(Retry.backoff(maxRetries, Duration.ofMillis(retryDelayMs))
+                        .filter(ex -> !(ex instanceof GitHubApiException ghe
+                                && (ghe.isNotFound() || ghe.isRateLimited()))));
+    }
+
     private PrInfo buildPrInfo(String owner, String repo, int number,
                                 Map<String, Object> prData, String diffContent,
                                 List<Map<String, Object>> filesData,

@@ -18,4 +18,9 @@ public class ReviewSuggestion {
     private String codeSnippet;
     private String suggestedFix;
     private String priority;
+
+    // Explainability fields (Phase 7)
+    private String why;
+    private String evidence;
+    private String impact;
 }

@@ -17,4 +17,12 @@ public class RiskFinding {
     private String category;
     private String description;
     private String suggestion;
+
+    // Explainability fields (Phase 7)
+    private String why;
+    private String evidence;
+    private String impact;
+
+    // AI confidence for this specific finding
+    private Double confidenceScore;
 }
