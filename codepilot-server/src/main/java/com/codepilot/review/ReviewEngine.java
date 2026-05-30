@@ -250,11 +250,11 @@ public class ReviewEngine {
 
     private String jsonComplete(AnalysisResult result) {
         String dataJson = cn.hutool.json.JSONUtil.toJsonStr(result);
-        return "{\"type\":\"complete\",\"data\":" + dataJson + "}";
+        return "data:{\"type\":\"complete\",\"data\":" + dataJson + "}\n\n";
     }
 
     private String jsonError(String message) {
-        return "{\"type\":\"error\",\"message\":\"" + escapeJson(message) + "\"}";
+        return "data:{\"type\":\"error\",\"message\":\"" + escapeJson(message) + "\"}\n\n";
     }
 
     private String escapeJson(String s) {

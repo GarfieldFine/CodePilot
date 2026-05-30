@@ -10,6 +10,7 @@ import com.codepilot.model.enums.RiskLevel;
 import com.codepilot.review.AnalysisResult;
 import com.codepilot.review.FileAnalysis;
 import com.codepilot.rule.RuleResult;
+import com.codepilot.ai.model.TokenUsage;
 import com.codepilot.confidence.ConfidenceCalculator;
 import com.codepilot.confidence.ConfidenceCalculator.ConfidenceInput;
 import com.codepilot.confidence.ConfidenceCalculator.ConfidenceResult;
@@ -68,6 +69,9 @@ public class SummaryMergeAgent implements Agent {
         // 3. Calculate AI confidence (enhanced with chunk metadata)
         Map<String, Object> confidence = calculateConfidence(context, riskScore);
 
+        // 3.5 Build token usage from chunk metadata
+        TokenUsage tokenUsage = buildTokenUsage(context);
+
         // 4. Build per-file analysis
         List<FileAnalysis> fileAnalysis = buildFileAnalysis(
                 context.getPrInfo(), context.getRuleResults());
@@ -97,6 +101,7 @@ public class SummaryMergeAgent implements Agent {
                 .fileAnalysis(fileAnalysis)
                 .repositoryProfile(repoProfile)
                 .confidenceScores(confidence)
+                .tokenUsage(tokenUsage)
                 .agentTimeline(List.of(
                         "RepositoryAnalyzeAgent: " + context.getProjectType() + " project detected",
                         "DiffAnalyzeAgent: " + fileAnalysis.size() + " files analyzed, "
@@ -187,6 +192,39 @@ public class SummaryMergeAgent implements Agent {
     }
 
     private record MergeResult(String combined, int chunkCount, int dedupCount) {}
+
+    private TokenUsage buildTokenUsage(AgentContext context) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> chunkMeta = (Map<String, Object>) context.getMetadata().get("chunkMeta");
+
+        int totalTokens = 0;
+        int promptTokens = 0;
+        int completionTokens = 0;
+        int totalChunks = 0;
+        int successfulChunks = 0;
+
+        if (chunkMeta != null) {
+            totalTokens = ((Number) chunkMeta.getOrDefault("totalTokens", 0)).intValue();
+            totalChunks = ((Number) chunkMeta.getOrDefault("totalChunks", 0)).intValue();
+            successfulChunks = ((Number) chunkMeta.getOrDefault("successfulChunks", 0)).intValue();
+            promptTokens = (int) (totalTokens * 0.7);
+            completionTokens = totalTokens - promptTokens;
+        }
+
+        if (totalChunks == 0) {
+            totalChunks = context.getChunkReviews().size();
+            successfulChunks = (int) context.getChunkReviews().stream()
+                    .filter(r -> r != null && !r.startsWith("[AI Review failed")).count();
+        }
+
+        return TokenUsage.builder()
+                .totalTokens(totalTokens)
+                .promptTokens(promptTokens)
+                .completionTokens(completionTokens)
+                .totalChunks(totalChunks)
+                .successfulChunks(successfulChunks)
+                .build();
+    }
 
     private Map<String, Object> calculateConfidence(AgentContext context, RiskScore riskScore) {
         @SuppressWarnings("unchecked")

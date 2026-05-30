@@ -1,5 +1,6 @@
 package com.codepilot.review;
 
+import com.codepilot.ai.model.TokenUsage;
 import com.codepilot.model.enums.AnalysisStatus;
 import com.codepilot.model.enums.RiskLevel;
 import com.codepilot.rule.RuleResult;
@@ -37,4 +38,5 @@ public class AnalysisResult {
     private Map<String, Object> repositoryProfile;
     private Map<String, Object> confidenceScores;
     private List<String> agentTimeline;
+    private TokenUsage tokenUsage;
 }
