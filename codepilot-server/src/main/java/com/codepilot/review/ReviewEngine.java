@@ -246,15 +246,15 @@ public class ReviewEngine {
         return analysis;
     }
 
-    // --- JSON SSE helpers ---
+    // --- JSON event helpers (raw JSON, Spring WebFlux adds SSE "data:" prefix) ---
 
     private String jsonComplete(AnalysisResult result) {
         String dataJson = cn.hutool.json.JSONUtil.toJsonStr(result);
-        return "data:{\"type\":\"complete\",\"data\":" + dataJson + "}\n\n";
+        return "{\"type\":\"complete\",\"data\":" + dataJson + "}";
     }
 
     private String jsonError(String message) {
-        return "data:{\"type\":\"error\",\"message\":\"" + escapeJson(message) + "\"}\n\n";
+        return "{\"type\":\"error\",\"message\":\"" + escapeJson(message) + "\"}";
     }
 
     private String escapeJson(String s) {

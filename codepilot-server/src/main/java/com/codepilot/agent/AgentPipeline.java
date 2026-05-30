@@ -61,13 +61,13 @@ public class AgentPipeline {
 
     /**
      * Execute the full pipeline as a Flux of SSE events (for streaming flow).
-     * Emits properly formatted SSE events with "data:" prefix.
+     * Raw JSON events — Spring WebFlux adds the SSE "data:" prefix automatically.
      */
     public Flux<String> executeStream(List<PipelineStage> stages, AgentContext context) {
         return Flux.create(sink -> {
             try {
                 execute(stages, context, event -> {
-                    sink.next("data:" + event.toJson() + "\n\n");
+                    sink.next(event.toJson());
                 });
                 sink.complete();
             } catch (Exception e) {
